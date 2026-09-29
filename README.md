@@ -106,7 +106,7 @@ psql "postgresql://booking:booking@localhost:5432/booking_dev" \
 DATABASE_URL="postgresql://booking:booking@localhost:5432/booking_test?schema=public" \
   npx prisma migrate deploy
 
-# run the three required e2e tests (in-band for cleaner DB isolation)
+# run the e2e suite (refuses to run unless the DB name is booking_test)
 DATABASE_URL="postgresql://booking:booking@localhost:5432/booking_test?schema=public" \
   npm run test:e2e
 ```
@@ -131,6 +131,8 @@ After a **successful** DB commit the server emits once:
 | `slot.released` | `{ "slotId": "...", "bookingId": "...", "available": true }` |
 
 Rejected requests and repeated cancels do **not** emit. Customer fields are never included.
+
+Socket.IO events are **change notifications**, not a durable source of truth. The database remains authoritative; after an event, clients may refresh `GET /slots` when they need definitive availability (for example if cancel and rebook race on the same slot).
 
 ### Manual listen script
 
@@ -173,8 +175,10 @@ WHERE status = 'active';
 Booking creation is a single `INSERT`. Under concurrent requests:
 
 - one insert commits → HTTP `201`
-- the other hits unique violation (`Prisma P2002`) → HTTP `409 SLOT_UNAVAILABLE`
+- the other hits unique violation (`Prisma P2002` on that index / `slot_id`) → HTTP `409 SLOT_UNAVAILABLE`
 - at most one `active` booking per slot remains
+
+Only that active-slot unique violation is mapped to `SLOT_UNAVAILABLE`; other database errors stay unexpected (`INTERNAL_ERROR`).
 
 Why this approach:
 
