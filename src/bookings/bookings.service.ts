@@ -63,6 +63,31 @@ export class BookingsService {
       throw validationError('bookingId must be a valid UUID.');
     }
 
+    // Atomic active → cancelled. Concurrent cancels: only one row is updated,
+    // so only the winner emits slot.released.
+    const updated = await this.prisma.booking.updateMany({
+      where: {
+        id: bookingId,
+        status: BookingStatus.active,
+      },
+      data: { status: BookingStatus.cancelled },
+    });
+
+    if (updated.count === 1) {
+      const booking = await this.prisma.booking.findUniqueOrThrow({
+        where: { id: bookingId },
+      });
+
+      this.events.emitSlotReleased({
+        slotId: booking.slotId,
+        bookingId: booking.id,
+        available: true,
+      });
+
+      return { booking: this.toResponse(booking) };
+    }
+
+    // No active row matched: either missing, or already cancelled (idempotent).
     const existing = await this.prisma.booking.findUnique({
       where: { id: bookingId },
     });
@@ -71,24 +96,7 @@ export class BookingsService {
       throw bookingNotFound();
     }
 
-    // Idempotent: repeating cancel on an already-cancelled booking returns 200
-    // with the same booking and does not emit another event.
-    if (existing.status === BookingStatus.cancelled) {
-      return { booking: this.toResponse(existing) };
-    }
-
-    const booking = await this.prisma.booking.update({
-      where: { id: bookingId },
-      data: { status: BookingStatus.cancelled },
-    });
-
-    this.events.emitSlotReleased({
-      slotId: booking.slotId,
-      bookingId: booking.id,
-      available: true,
-    });
-
-    return { booking: this.toResponse(booking) };
+    return { booking: this.toResponse(existing) };
   }
 
   private toResponse(booking: Booking) {
